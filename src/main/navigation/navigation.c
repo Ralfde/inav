@@ -818,7 +818,7 @@ static navigationFSMEvent_t navOnEnteringState_NAV_STATE_RTH_INITIALIZE(navigati
 
         // If close to home - reset home position and land
         if (posControl.homeDistance < navConfig()->general.min_rth_distance) {
-            setHomePosition(&posControl.actualState.pos, posControl.actualState.yaw, NAV_POS_UPDATE_XY | NAV_POS_UPDATE_HEADING);
+            setHomePosition(&posControl.actualState.pos, posControl.actualState.yaw, NAV_POS_UPDATE_XY | NAV_POS_UPDATE_HEADING, NAV_HOME_VALID_ALL);
             setDesiredPosition(&posControl.actualState.pos, posControl.actualState.yaw, NAV_POS_UPDATE_XY | NAV_POS_UPDATE_Z | NAV_POS_UPDATE_HEADING);
 
             return NAV_FSM_EVENT_SWITCH_TO_RTH_LANDING;   // NAV_STATE_RTH_HOVER_PRIOR_TO_LANDING
@@ -1709,26 +1709,34 @@ bool validateRTHSanityChecker(void)
 /*-----------------------------------------------------------
  * Reset home position to current position
  *-----------------------------------------------------------*/
-void setHomePosition(const fpVector3_t * pos, int32_t yaw, navSetWaypointFlags_t useMask)
+void setHomePosition(const fpVector3_t * pos, int32_t yaw, navSetWaypointFlags_t useMask, navigationHomeFlags_t homeFlags)
 {
     // XY-position
     if ((useMask & NAV_POS_UPDATE_XY) != 0) {
         posControl.homePosition.pos.x = pos->x;
         posControl.homePosition.pos.y = pos->y;
-        posControl.homeFlags |= NAV_HOME_VALID_XY;
+        if (homeFlags & NAV_HOME_VALID_XY) {
+            posControl.homeFlags |= NAV_HOME_VALID_XY;
+        } else {
+            posControl.homeFlags &= ~NAV_HOME_VALID_XY;
+        }
     }
 
     // Z-position
     if ((useMask & NAV_POS_UPDATE_Z) != 0) {
         posControl.homePosition.pos.z = pos->z;
-        posControl.homeFlags |= NAV_HOME_VALID_Z;
+        if (homeFlags & NAV_HOME_VALID_Z) {
+            posControl.homeFlags |= NAV_HOME_VALID_Z;
+        } else {
+            posControl.homeFlags &= ~NAV_HOME_VALID_Z;
+        }
     }
 
     // Heading
     if ((useMask & NAV_POS_UPDATE_HEADING) != 0) {
         // Heading
         posControl.homePosition.yaw = yaw;
-        if (posControl.flags.estHeadingStatus >= EST_USABLE) {
+        if (homeFlags & NAV_HOME_VALID_HEADING) {
             posControl.homeFlags |= NAV_HOME_VALID_HEADING;
         } else {
             posControl.homeFlags &= ~NAV_HOME_VALID_HEADING;
@@ -1744,6 +1752,21 @@ void setHomePosition(const fpVector3_t * pos, int32_t yaw, navSetWaypointFlags_t
 
     updateHomePositionCompatibility();
     ENABLE_STATE(GPS_FIX_HOME);
+}
+
+static navigationHomeFlags_t navigationActualStateHomeValidity(void)
+{
+    navigationHomeFlags_t flags = 0;
+
+    if (posControl.flags.estPosStatue >= EST_USABLE) {
+        flags |= NAV_HOME_VALID_XY | NAV_HOME_VALID_Z;
+    }
+
+    if (posControl.flags.estHeadingStatus >= EST_USABLE) {
+        flags |= NAV_HOME_VALID_HEADING;
+    }
+
+    return flags;
 }
 
 /*-----------------------------------------------------------
@@ -1767,7 +1790,7 @@ void updateHomePosition(void)
                     break;
             }
             if (setHome) {
-                setHomePosition(&posControl.actualState.pos, posControl.actualState.yaw, NAV_POS_UPDATE_XY | NAV_POS_UPDATE_Z | NAV_POS_UPDATE_HEADING);
+                setHomePosition(&posControl.actualState.pos, posControl.actualState.yaw, NAV_POS_UPDATE_XY | NAV_POS_UPDATE_Z | NAV_POS_UPDATE_HEADING, navigationActualStateHomeValidity());
             }
         }
     }
@@ -1778,7 +1801,7 @@ void updateHomePosition(void)
         if (IS_RC_MODE_ACTIVE(BOXHOMERESET)) {
             if (isHomeResetAllowed && !FLIGHT_MODE(FAILSAFE_MODE) && !FLIGHT_MODE(NAV_RTH_MODE) && !FLIGHT_MODE(NAV_WP_MODE) && (posControl.flags.estPosStatue >= EST_USABLE)) {
                 const navSetWaypointFlags_t homeUpdateFlags = STATE(GPS_FIX_HOME) ? (NAV_POS_UPDATE_XY | NAV_POS_UPDATE_HEADING) : (NAV_POS_UPDATE_XY | NAV_POS_UPDATE_Z | NAV_POS_UPDATE_HEADING);
-                setHomePosition(&posControl.actualState.pos, posControl.actualState.yaw, homeUpdateFlags);
+                setHomePosition(&posControl.actualState.pos, posControl.actualState.yaw, homeUpdateFlags, navigationActualStateHomeValidity());
                 isHomeResetAllowed = false;
             }
         }
@@ -2070,7 +2093,7 @@ void setWaypoint(uint8_t wpNumber, const navWaypoint_t * wpData)
     if ((wpNumber == 0) && ARMING_FLAG(ARMED) && (posControl.flags.estPosStatue >= EST_USABLE) && posControl.gpsOrigin.valid && posControl.flags.isGCSAssistedNavigationEnabled) {
         // Forcibly set home position. Note that this is only valid if already armed, otherwise home will be reset instantly
         geoConvertGeodeticToLocal(&posControl.gpsOrigin, &wpLLH, &wpPos.pos, GEO_ALT_RELATIVE);
-        setHomePosition(&wpPos.pos, 0, NAV_POS_UPDATE_XY | NAV_POS_UPDATE_Z | NAV_POS_UPDATE_HEADING);
+        setHomePosition(&wpPos.pos, 0, NAV_POS_UPDATE_XY | NAV_POS_UPDATE_Z | NAV_POS_UPDATE_HEADING, NAV_HOME_VALID_ALL);
     }
     // WP #255 - special waypoint - directly set desiredPosition
     // Only valid when armed and in poshold mode
